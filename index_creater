@@ -1,0 +1,140 @@
+import os
+from os.path import join
+import re
+from bs4 import BeautifulSoup
+import elasticsearch
+from elasticsearch import client
+from collections import defaultdict
+import string
+import math
+import json
+es = elasticsearch.Elasticsearch("localhost:9200", timeout=600, max_retries=2, revival_delay=0)
+idx = elasticsearch.client.IndicesClient(es)
+
+def parseDocuments():
+    path = "D:/Information Retreival/Assignment 3/"
+    listOfFiles = os.listdir(path);
+    for i in listOfFiles:
+        
+        file = open(join(path,i),"r").read()
+        url = getURL(file)
+        text = getText(file)
+        inLinks = getInLinks(file)
+        outLinks = getOutLinks(file)
+        addCorpusToIndex(url, text, inLinks, outLinks)
+        #i=i+1
+
+def addCorpusToIndex(url, text, inlinks, outlinks):
+    es.index(
+            index = 'ap_dataset', 
+            doc_type = 'document', 
+            id = url, 
+            body = {
+            'docno': url,
+            'text': text,
+            'inlinks': inlinks,
+            'outlinks': outlinks
+            })
+    
+def deleteIndex ():
+    idx.delete('*')
+    
+def createIndex():
+        idx.create(index='ap_dataset',
+                 body={
+                          "settings": {
+                            "index": {
+                              "store": {
+                                "type": "default"
+                              },
+                              "number_of_shards": 1,
+                              "number_of_replicas": 1
+                            },
+                            "analysis": {
+                              "analyzer": {
+                                "my_english": { 
+                                  "type": "english",
+                                  "stopwords_path": "stoplist.txt" 
+                                }
+                              }
+                            }
+                          }
+                        })
+        
+        idx.put_mapping(index='ap_dataset', doc_type = 'document', body={
+                                                      "document": {
+                                                        "properties": {   
+                                                        "urlId": {
+                                                            "type": "string",
+                                                            "store": True,
+                                                            "index": "not_analyzed"
+                                                          },                                                                                                                       
+                   
+                                                        "text": {
+                                                            "type": "string",
+                                                            "store": True,
+                                                            "index": "analyzed",
+                                                            "term_vector": "with_positions_offsets_payloads",
+                                                            "analyzer": "my_english"
+                                                         },
+                                                                       
+                                                        "inlinks": {
+                                                            "type": "string",
+                                                            "store": True,
+                                                            "index": "no"
+                                                          },
+                                                                       
+                                                        "outlinks": {
+                                                            "type": "string",
+                                                            "store": True,
+                                                            "index": "no"
+                                                          }             
+                                                    
+                                                        }
+                                                      }
+                                                    })
+            
+def getURL(file):
+    url = ""
+    urlField = re.search('<URLID>.*</URLID>',file)
+    soup = BeautifulSoup(urlField.group())
+    url = soup.find('urlid').text.strip()
+    return url
+
+def getText(file):
+    text = ""
+    textField = re.findall('<TEXT>.*</TEXT>',file, re.DOTALL)
+    soup = BeautifulSoup(str(textField))
+    text = soup.find('text').text.strip()
+    return text
+
+def getInLinks(file):
+    inLinksContent = ""
+    inLinksField = re.findall('<INLINKS>.*</INLINKS>',file, re.DOTALL)
+    soup = BeautifulSoup(str(inLinksField))
+    if soup.find('inlinks') is not None:
+        inLinkList = soup.find('inlinks').text.strip()
+        inLinks = inLinkList.split()
+        for inLink in inLinks:
+            inLink.replace("\n","")
+            inLinksContent += inLink.strip() + "\n" #+ "\n"
+    return inLinksContent
+
+def getOutLinks(file):
+    outLinksContent = ""
+    outLinksField = re.findall('<OUTLINKS>.*</OUTLINKS>',file, re.DOTALL)
+    soup = BeautifulSoup(str(outLinksField))
+    if soup.find('outlinks') is not None:
+        outLinkList = soup.find('outlinks').text.strip()
+        outLinks = outLinkList.split()
+        for outLink in outLinks:
+            outLink.replace("\n","")
+            outLinksContent += outLink.strip() + "\n" #+ "\n"
+    return outLinksContent
+
+def main():
+    #deleteIndex()
+    #createIndex()
+    parseDocuments()
+    
+main() 
