@@ -1,0 +1,357 @@
+import httplib
+import urllib2
+from lxml.html.clean import clean_html
+import requests
+from urlparse import urljoin
+import robotparser
+from Queue import Queue
+import time
+import httplib
+from urlparse import urlparse
+from bs4 import BeautifulSoup
+import re
+import os
+from os.path import join
+import sys
+
+reload(sys)  # Reload does the trick!
+sys.setdefaultencoding('UTF8')
+
+
+frontier = Queue()
+urlDict = {}
+seen = set()
+fileNumber = 1
+urlObjectDict = {}
+fileToURLMapping = {}
+
+#print fileNumber
+ 
+def get_Server_Status_Code(url):
+    host, path = urlparse(url)[1:3]
+    try:
+        conn = httplib.HTTPConnection(host)
+        conn.request('HEAD', path)
+        return conn.getresponse().status
+    except StandardError:
+        return None
+ 
+def check_url(url):
+    valid_urls = [httplib.OK, httplib.FOUND]
+    return get_Server_Status_Code(url) in valid_urls
+
+
+def canonicalize_URL_test(uncan_URL, parent_URL):
+    if not (uncan_URL.startswith("http://") or uncan_URL.startswith("https://") or uncan_URL.startswith("HTTP://") or uncan_URL.startswith("HTTPS://")):
+        uncan_URL = "http://" + uncan_URL 
+    
+    o = urlparse(uncan_URL)
+    url = str(o.scheme).lower() + "://" + str(o.netloc).lower() + str(o.path)
+    print url
+    if url.startswith(".."):
+        new_URL = urljoin(parent_URL, url, allow_fragments=False) 
+        new_URL = new_URL.replace("//", "/")
+    else:
+        new_URL = url.replace("//", "/")
+    new_URL = new_URL.replace("http:/", "http://")
+    new_URL = new_URL.replace("https:/", "https://")
+    new_URL = new_URL.replace(":80", "")
+    new_URL = new_URL.replace(":443", "")
+    if new_URL.startswith("#:"):
+        new_URL = new_URL[2:]
+    new_URL = new_URL.split('#')[0]
+    print new_URL
+    if new_URL.find("?"):
+        new_URL = new_URL + "?"
+        new_URL = new_URL[:new_URL.find("?")]
+    if not new_URL.endswith("/"):
+        new_URL = new_URL + "/"
+    return new_URL 
+
+def canonicalize_URL(uncan_URL, parent_URL):
+    
+    if uncan_URL.startswith("#") or uncan_URL == "/":
+        return parent_URL
+    
+    if uncan_URL.startswith("#:"):
+        uncan_URL = uncan_URL[2:]
+    uncan_URL = uncan_URL.split('#')[0]
+    
+    if uncan_URL.startswith(".."):
+        uncan_URL = urljoin(parent_URL, uncan_URL, allow_fragments=False) 
+        
+        
+    o = urlparse(uncan_URL)
+    s = urlparse(parent_URL)
+    
+    if str(o.scheme) == '':
+        uncan_URL = "http://" + uncan_URL
+    
+    p = urlparse(uncan_URL)
+    
+    if str(p.netloc) == '' and str(p.path) != '':
+        new_URL = str(p.scheme).lower() + "://" + str(s.netloc) + str(p.path)
+    elif str(p.netloc) == '' and str(p.path) == '':
+        new_URL = str(p.scheme).lower() + "://" + str(s.netloc) + str(s.path)
+    elif str(p.netloc) != '':
+        new_URL = str(p.scheme).lower() + "://" + str(p.netloc).lower() + str(p.path)
+    
+    new_URL = new_URL.replace("//", "/")
+    new_URL = new_URL.replace("https:/", "https://")
+    new_URL = new_URL.replace("http:/", "http://")
+    
+    new_URL = new_URL.replace(":" + str(p.port), "")
+    # new_URL = new_URL.replace(":443", "")
+      
+    # new_URL = new_URL.split(':')[0]
+    # if not new_URL.endswith("/"):
+    #   new_URL = new_URL + "/"
+    return new_URL
+    
+
+def addSeedsToFrontier():
+    seedList = ["http://www.nhc.noaa.gov/outreach/history/", "http://en.wikipedia.org/wiki/Hurricane_Sandy", "https://www.fema.gov/sandy-recovery-office", "http://en.wikipedia.org/wiki/Effects_of_Hurricane_Sandy_in_New_York", "http://www.cnn.com/2013/07/13/world/americas/hurricane-sandy-fast-facts/"]
+    global frontier
+    global urlDict
+    global urlObjectDict
+    
+    for seedURL in seedList:
+        if check_url(seedURL):
+            #print seedURL
+            canSeedURL = canonicalize_URL(seedURL, "")
+            x = urlnode(canSeedURL)
+            # x.display()
+            urlObjectDict[canSeedURL] = x
+            frontier.put(canSeedURL)
+            # checkRobot(canSeedURL)
+        # print getResponseType(seedURL)
+    # print frontier
+    # print urlDict
+    # print urlObjectDict
+
+def crawler():
+    global frontier
+    global seen
+    #print frontier
+    while not frontier.empty():
+        url = frontier.get()
+        
+        if url not in seen:
+            # print url
+            fetch(url, seen, frontier)
+        time.sleep(1)
+        
+        if len(seen) > 13000:
+            break
+    
+    writeLinksToFile()   
+            
+def fetch(url, seen, frontier):
+    data = ""
+    titleText = ""
+    contentText = ""
+    inLinkCountDict = {}
+    response = getResponseType(url)
+    if "html" in response:
+        try:
+            data = urllib2.urlopen(url).read()
+        except ValueError, e:
+            pass
+        except urllib2.HTTPError, e:
+            pass
+        except urllib2.URLError, e:
+            pass
+        except Exception, e:
+            pass
+        except httplib.HTTPException, e:
+            pass
+       
+        urlObject = urlnode(url)
+        seen.add(url)
+        soup = BeautifulSoup(data)
+        for tag in soup.findAll('a', href=True):
+            # print tag['href']
+            # if tag['href'].startswith("http://") or tag['href'].startswith("https://"): 
+            can_outLink = canonicalize_URL(tag['href'], url)
+            # print can_outLink
+            addCurrentUrlAsInLink(url, can_outLink, inLinkCountDict)
+            urlObject.add_outLink(can_outLink)
+        urlObjectDict[url] = urlObject
+        title = re.search('<title>.*</title>', data)
+        if title is not None:
+            soup1 = BeautifulSoup(title.group())
+            titleText = soup1.find('title').text.encode('utf-8')
+        # print titleText
+        soup2 = BeautifulSoup(data)
+        for paragraph in soup2.find_all('p'):
+            contentText += paragraph.get_text().encode('utf-8')
+        # print contentText
+        if response == "html":
+            data = data.encode('utf-8')
+        writeDataToFile(urlObject, titleText, contentText, data)
+        updateFrontier(inLinkCountDict, frontier)
+    else:
+        pass
+        
+def updateFrontier(inLinkCountDict, frontier):
+    for url in sorted(inLinkCountDict, key=inLinkCountDict.get, reverse=True):
+        frontier.put(url)
+            
+    
+def addCurrentUrlAsInLink(parent_URL, can_outLink, inLinkCountDict):
+    global urlObjectDict
+    # print can_outLink
+    # can_outLink = canonicalize_URL(outLink, parent_URL)
+    if urlObjectDict.has_key(can_outLink):
+        # print urlObjectDict[can_outLink].urlString
+        # urlObject = urlnode("")
+        urlObject = urlObjectDict[can_outLink]
+        inLinks = urlObject.get_inLinks()
+        if parent_URL not in inLinks:
+            urlObject.add_inLink(parent_URL)
+        urlObjectDict[can_outLink] = urlObject
+    else:
+        urlObject = urlnode(can_outLink)
+        urlObject.add_inLink(parent_URL)
+        urlObjectDict[can_outLink] = urlObject
+    # print urlObjectDict
+    # print urlObject.inLinks
+    inLinkCountDict[can_outLink] = len(urlObject.inLinks)
+    # print inLinkCountDict
+    
+def writeDataToFile(urlObject, titleText, contentText, data):
+    global fileNumber
+    global fileToURLMapping
+    #print "hi"
+    fileToURLMapping[str(urlObject.urlString)] = fileNumber
+    path = "D:/Information Retreival/Assignment 3/"
+    fileName = "doc" + str(fileNumber)
+    file = open(join(path, fileName), "w")
+    file.write("<URLID>" + str(urlObject.urlString) + "</URLID>" + "\n" + "<HEAD>" + titleText + "</HEAD>" + "\n" + "<TEXT>" + contentText + "</TEXT>" + "\n" + "<RAWHTML>" + data + "</RAWHTML>" + "\n")
+    fileNumber += 1
+
+
+def writeLinksToFile():
+    global urlObjectDict
+    global fileToURLMapping
+    global seen
+    
+    for url in seen:
+        urlObject = urlObjectDict[url]
+        fileNumber = fileToURLMapping[url]
+        path = "D:/Information Retreival/Assignment 3/"
+        fileName = "doc" + str(fileNumber)
+        file = open(join(path, fileName), "a")
+        inLinks = urlObject.inLinks
+        outLinks = urlObject.outLinks
+        writeInLinks(inLinks, file)
+        writeOutLinks(outLinks, file)
+
+def writeInLinks(inLinks, file):
+    file.write("<INLINKS>")
+    for inLink in inLinks:
+        file.write(inLink + " ")
+    file.write("</INLINKS>\n")
+    
+def writeOutLinks(outLinks, file):
+    file.write("<OUTLINKS>")
+    for outLink in outLinks:
+        file.write(outLink + " ")
+    file.write("</OUTLINKS>\n")
+        
+def getResponseType(url):
+    class HeadRequest(urllib2.Request):
+        def get_method(self):
+            return "HEAD"
+    
+    request = HeadRequest(url)
+    try:
+        response = urllib2.urlopen(request)
+        response_headers = response.info()
+        response_headers.dict
+        return response_headers['content-type']
+        # continue
+    except ValueError, e:
+        return "Nothing"
+    except urllib2.HTTPError, e:
+        return "Nothing"
+    except urllib2.URLError, e:
+        return "Nothing"
+    except Exception, e:
+        return "Nothing"
+    except httplib.HTTPException, e:
+        return "Nothing"
+
+    
+def checkRobot(url):
+    rp = robotparser.RobotFileParser()
+    parsed_URL = urlparse(url)
+    new_URL = '{uri.scheme}://{uri.netloc}'.format(uri=parsed_URL)
+    robotString = new_URL + "/robots.txt"
+    print robotString
+    rp.set_url(robotString)
+    rp.read()
+    print rp.can_fetch("*", robotString)
+
+class urlnode():
+    
+    def __init__(self, urlString):
+        self.urlString = urlString
+        self.inLinks = []
+        self.outLinks = []
+        
+    def add_inLink(self, inLink):
+        self.inLinks.append(inLink)
+        
+    def add_outLink(self, outLink):
+        self.outLinks.append(outLink)
+        
+    def get_inLinks(self):
+        return self.inLinks
+    
+    def get_outLinks(self):
+        return self.outLinks
+        
+    def display(self):
+        print self.urlString
+
+def test():
+    or_url = "http://www.nhc.noaa.gov/outreach/history/"
+    s = urlparse(or_url)
+    url = "http://www.weather.gov:80"
+    p = urlparse(url)
+    
+    if str(p.scheme) == '':
+        url = "http://" + url
+    # print str(o.scheme), str(o.netloc), str(o.path)
+    if str(p.netloc) == '' and str(p.path) != '':
+        new_URL = str(p.scheme).lower() + "://" + str(s.netloc) + str(p.path)
+    elif str(p.netloc) == '' and str(p.path) == '':
+        new_URL = str(p.scheme).lower() + "://" + str(s.netloc) + str(s.path)
+    elif str(p.netloc) != '':
+        new_URL = str(p.scheme).lower() + "://" + str(p.netloc).lower() + str(p.path)
+    
+    new_URL = new_URL.replace(":" + str(p.port), "")
+    
+    print new_URL   
+
+def test1():
+    global urlObjectDict
+    
+    obj = urlnode("http://www.weather.gov/")
+    urlObjectDict["http://www.weather.gov/"] = obj
+    # print urlObjectDict["http://www.weather.gov/"].display()    
+    
+def main():
+    addSeedsToFrontier()
+    crawler()
+    # test()
+    # fetch("http://www.nhc.noaa.gov/outreach/history/", seen, frontier)
+    # print getResponseType("http://en.wikipedia.org/wiki/Hurricane_Sandy")
+    # check_url("https://www.fema.gov/sandy-recovery-office")
+    # test()
+    # canonicalize_URL("http://www.nhc.noaa.gov/outreach/history?search=l", "")    
+
+main()
+    
+
